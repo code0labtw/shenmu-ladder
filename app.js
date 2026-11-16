@@ -986,7 +986,7 @@ function renderBoard() {
     } else if (selectedEnd !== null) {
       msg = '已選終點 <b>' + END_LABELS[selectedEnd] + '</b>，再點上方起點 <b>A–F</b> 即可鎖定';
     } else {
-      msg = '依序點「起點 → 終點」鎖定已知路線（切至「查詢機率」不會清除鎖定）';
+      msg = '依序點「起點 → 終點」鎖定已知路線（切至「查詢機率」不會清除鎖定），查詢機率之前請先把鎖定起終的橫線點亮，避免影響計算機率';
     }
     status = '<p class="status">' + msg + '</p>';
   } else {
