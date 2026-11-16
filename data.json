@@ -1,0 +1,9 @@
+{
+  "examples": [
+    { "layer": 1, "layerLabel": "第 01 層", "rungs": 5, "src": "examples/layer-01-rungs-5.webp", "alt": "第 01 層盤面範例，橫線數量 5 條" },
+    { "layer": 2, "layerLabel": "第 02 層", "rungs": 6, "src": "examples/layer-02-rungs-6.webp", "alt": "第 02 層盤面範例，橫線數量 6 條" },
+    { "layer": 3, "layerLabel": "第 03 層", "rungs": 7, "src": "examples/layer-03-rungs-7.webp", "alt": "第 03 層盤面範例，橫線數量 7 條" },
+    { "layer": 4, "layerLabel": "第 04 層", "rungs": 8, "src": "examples/layer-04-rungs-8.webp", "alt": "第 04 層盤面範例，橫線數量 8 條" },
+    { "layer": 5, "layerLabel": "第 05 層", "rungs": 9, "src": "examples/layer-05-rungs-9.webp", "alt": "第 05 層盤面範例，橫線數量 9 條" }
+  ]
+}
