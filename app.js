@@ -994,6 +994,7 @@ function renderBoard() {
       '<p class="status dim">點 <em>A–F</em> 查落點機率 · 點 <em>1–6</em> 找最佳起點（鎖定路線維持不變）</p>';
   }
   html += '<div class="status-wrap">' + status + '</div>';
+  html += '<p class="status dim" style="margin-top: -0.25rem; margin-bottom: 0.625rem; line-height: 1.4;">查詢機率之前請先把鎖定起終的橫線點亮，避免影響計算機率</p>';
 
   /* start nodes */
   html += '<div class="node-row top">';
