@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: "Outfit", "Noto Sans TC", system-ui, -apple-system, sans-serif;
+    color-scheme: dark;
+  }
+
+  .font-mono-num {
+    font-family: "JetBrains Mono", "Outfit", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
