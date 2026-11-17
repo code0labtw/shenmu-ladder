@@ -81,10 +81,14 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .btn-reset {
   display: inline-flex; align-items: center; gap: 0.375rem; height: 2.125rem; padding: 0 0.75rem;
   border: 1px solid var(--s700); background: var(--card); border-radius: 0.5rem;
-  font-size: 0.8125rem; font-weight: 500; color: var(--s200); white-space: nowrap; flex-shrink: 0; transition: background 0.15s, border-color 0.15s;
+  font-size: 0.8125rem; font-weight: 500; color: var(--s200); white-space: nowrap; flex-shrink: 0; transition: none;
 }
 @media (min-width: 640px) { .btn-reset { height: 2.5rem; padding: 0 1rem; font-size: 0.875rem; } }
-.btn-reset:hover { background: var(--s800); border-color: var(--s500); }
+.btn-reset { -webkit-tap-highlight-color: transparent; }
+.btn-reset:focus, .btn-reset:focus-visible { outline: none; }
+.btn-reset:hover, .btn-reset:active, .btn-reset:focus, .btn-reset:focus-visible {
+  background: var(--card); border-color: var(--s700); outline: none; box-shadow: none; transition: none;
+}
 .btn-reset svg { width: 0.875rem; height: 0.875rem; }
 
 /* ---- Workspace & Cards ---- */
