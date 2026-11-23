@@ -942,11 +942,39 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     }
     const litStartCount = startLit.filter(Boolean).length;
     const litEndCount = endLit.filter(Boolean).length;
+
+    // 部分遊戲畫面會把已完成的獎勵端改成金色／灰色，底部最後一段
+    // 不再維持青色發光；但上方起點與中間橫線仍完整保留。此時若只看
+    // endLit，會把所有可由盤面直接追蹤的路線錯誤丟掉。當「沒有任何
+    // 亮終點」且起點追蹤結果是一對一時，採用盤面追蹤結果作為推定配對。
+    let inferredEndpointPairs = false;
+    if (litStartCount > 0 && litEndCount === 0 && pairs.length === 0) {
+      const inferred = [];
+      const inferredEnds = new Set();
+      for (let s = 0; s < COLS; s++) {
+        if (!startLit[s]) continue;
+        const e = trace(s);
+        if (inferredEnds.has(e)) {
+          inferred.length = 0;
+          break;
+        }
+        inferredEnds.add(e);
+        inferred.push({ start: s, end: e });
+      }
+      if (inferred.length === litStartCount) {
+        pairs.push(...inferred);
+        inferredEndpointPairs = true;
+        for (let i = warnings.length - 1; i >= 0; i--) {
+          if (warnings[i].includes('已略過鎖定（可能漏偵測橫線）')) warnings.splice(i, 1);
+        }
+        warnings.push('底部終點線未保持發光，已依起點與亮起橫線追蹤推定 ' + inferred.length + ' 條路線。');
+      }
+    }
     consistency.startLit = litStartCount;
     consistency.endLit = litEndCount;
     consistency.pairs = pairs.length;
     consistency.score = pairs.length * 100 + rung.filter((row) => row.some(Boolean)).length;
-    if (litStartCount !== litEndCount) {
+    if (litStartCount !== litEndCount && !inferredEndpointPairs) {
       warnings.push('亮起的起點 ' + litStartCount + ' 個、終點 ' + litEndCount + ' 個，數量不一致，請確認預覽。');
     }
 
