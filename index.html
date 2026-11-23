@@ -1877,6 +1877,33 @@ const els = {
 function recompute() {
   const s = state;
   s.solveResult = solveLadder(s.board, s.targetRungs, s.lockedPairs);
+  // 截圖匯入後若「已放置數量 = 目標數量」，盤面已經是完整盤面。
+  // 此時不應再把未知格當成可變配置交給組合求解器；直接沿目前亮線追蹤，
+  // 可避免 OCR 數字信心不足或殘留目標值造成「明明有最後一個獎勵卻無解」。
+  if (s.solveResult.totalBoards === 0) {
+    const placed = countPlacedRungs(s.board);
+    if (placed === s.targetRungs && placed >= MIN_RUNGS) {
+      const ends = Array.from({ length: NUM_COLS }, (_, start) => traceCurrentPath(s.board, start));
+      const uniqueEnds = new Set(ends);
+      const lockedOk = s.lockedPairs.every((p) => ends[p.start] === p.end);
+      if (lockedOk && uniqueEnds.size === NUM_COLS) {
+        const probabilities = Array.from({ length: NUM_COLS }, (_, start) =>
+          Array.from({ length: NUM_COLS }, (_, end) => (ends[start] === end ? 1 : 0)),
+        );
+        const counts = probabilities.map((row) => row.slice());
+        s.solveResult = {
+          totalBoards: 1,
+          placedCount: placed,
+          probabilities,
+          counts,
+          isCompleteBoard: true,
+          deterministicEnds: ends,
+          error: null,
+          fallback: 'complete-current-board',
+        };
+      }
+    }
+  }
   if (s.selectedStart === null || s.selectedEnd === null || s.solveResult.totalBoards === 0) {
     s.routeHighlight = null;
   } else {
@@ -2581,7 +2608,10 @@ function showScanPreview(r, source) {
   const pairText = r.pairs.length
     ? r.pairs.map((p) => START_LABELS[p.start] + '→' + END_LABELS[p.end]).join('、')
     : '（無）';
-  const mr = r.maxRead && r.maxRead.confident && r.maxRead.value >= MIN_RUNGS && r.maxRead.value <= MAX_RUNGS ? r.maxRead.value : null;
+  // 數字膠囊在遊戲背景上常被壓縮；若讀到的上限剛好等於實際偵測橫線數，
+  // 這是比模板的 confident 分數更可靠的交叉驗證，不應退回舊的 5 條。
+  const mr = r.maxRead && r.maxRead.value >= MIN_RUNGS && r.maxRead.value <= MAX_RUNGS &&
+    (r.maxRead.confident || r.maxRead.value === r.rungCount) ? r.maxRead.value : null;
   const defaultTotal = mr !== null
     ? mr
     : Math.max(MIN_RUNGS, Math.min(MAX_RUNGS, Math.max(r.rungCount, state.targetRungs)));
