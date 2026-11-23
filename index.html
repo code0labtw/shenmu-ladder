@@ -399,7 +399,9 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     const g = data[p + 1];
     const b = data[p + 2];
     const r = data[p];
-    const min = level === 0 ? 215 : 185;
+    // 手機／平板截圖經過縮放後，亮線核心常落在 RGB 145–185；
+    // level 1 只作為第二次嘗試，降低門檻但仍保留藍綠色差限制。
+    const min = level === 0 ? 215 : 145;
     return g >= min && b >= min && r >= 50 && Math.abs(g - b) <= 45;
   }
 
@@ -524,6 +526,92 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       }
     }
     return centers;
+  }
+
+  /**
+   * 從未點亮的藍色節點找出五個橫線列中心。
+   * IMG-0147 顯示：亮起的直線只出現在 C–F 欄，若只依賴亮線上下端，
+   * 背景光點會把 dy 拉成 112 或 360。節點本身在六欄位置都有藍色圓點，
+   * 因此改以每個欄位附近的藍色像素投票，獨立估算列中心。
+   */
+  function gridNodeRows(img, xs, dx) {
+    const { data, width: w, height: h } = img;
+    const hist = new Float32Array(h);
+    const half = Math.max(5, Math.round(0.11 * dx));
+    for (let y = 0; y < h; y++) {
+      let votes = 0;
+      for (const x0 of xs) {
+        const xa = Math.max(0, Math.floor(x0 - half));
+        const xb = Math.min(w - 1, Math.ceil(x0 + half));
+        let local = 0;
+        for (let x = xa; x <= xb; x++) {
+          const p = (y * w + x) * 4;
+          const r = data[p];
+          const g = data[p + 1];
+          const b = data[p + 2];
+          // 節點是偏深藍色；亮線偏青色，b-g 色差可排除大部分亮線。
+          if (b >= 100 && b >= g + 25 && g >= 50 && r < 120) local++;
+        }
+        if (local >= Math.max(2, Math.round(0.035 * dx))) votes++;
+      }
+      if (votes >= 2) hist[y] = votes;
+    }
+    const centers = [];
+    let s = -1;
+    let last = -1;
+    for (let y = 0; y <= h; y++) {
+      if (y < h && hist[y] > 0) {
+        if (s < 0) s = y;
+        last = y;
+      } else if (s >= 0 && (y >= h || y - last > 8)) {
+        if (last - s + 1 <= 0.035 * h) {
+          let sum = 0;
+          let weight = 0;
+          for (let yy = s; yy <= last; yy++) {
+            sum += yy * hist[yy];
+            weight += hist[yy];
+          }
+          centers.push(weight ? sum / weight : (s + last) / 2);
+        }
+        s = -1;
+      }
+    }
+    return centers;
+  }
+
+  /**
+   * 從已偵測到的橫線列中心反推 y0 / dy。
+   * 端點亮線可能被圓環、光暈或裁切拉長，因此列中心比上下端點可靠。
+   * 允許只看到部分列，並以相鄰列距的候選值選出一致性最高者。
+   */
+  function fitRowsFromCenters(centers, initialY0, initialDy) {
+    if (!centers || centers.length < 2) return null;
+    const sorted = Array.from(new Set(centers.map((v) => Math.round(v * 10) / 10))).sort((a, b) => a - b);
+    let best = null;
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const span = j - i;
+        const dy = (sorted[j] - sorted[i]) / span;
+        if (dy < 0.45 * initialDy || dy > 1.7 * initialDy) continue;
+        for (let rowI = 1; rowI <= ROWS - span + 1; rowI++) {
+          const y0 = sorted[i] - rowI * dy;
+          const pts = [];
+          let hit = 0;
+          let residual = 0;
+          for (const y of sorted) {
+            const k = Math.round((y - y0) / dy);
+            const err = Math.abs(y - (y0 + k * dy));
+            if (k >= 1 && k <= ROWS && err <= 0.22 * dy) {
+              pts.push([k, y]); hit++; residual += err / dy;
+            }
+          }
+          if (hit < 2) continue;
+          const score = hit * 10 - residual - Math.abs(dy - initialDy) / initialDy;
+          if (!best || score > best.score) best = { y0, dy, pts, score, hit, residual };
+        }
+      }
+    }
+    return best;
   }
 
   /** 沿線段取樣，回傳亮色比例 */
@@ -655,12 +743,18 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     const { width: w, height: h } = img;
     const warnings = [];
     const mask = buildMask(img, level);
+    const consistency = {
+      level, calibrated: false, latticeAssigned: 0, latticeExpected: COLS,
+      dx: null, dy: null, dyPrior: null, rowCenters: 0, rowHits: 0,
+      rowResidual: null, endpointResidual: null, startLit: 0, endLit: 0,
+      pairs: 0, score: null,
+    };
 
     // 1) 找出亮起的直線 → 推算 6 欄 x 座標
     const minRun = Math.round(0.04 * h);
     const runsByX = verticalRuns(mask, w, h, minRun, 3);
     const thinClusters = clusterColumns(runsByX, w, Math.max(6, Math.round(0.03 * w)));
-    if (thinClusters.length === 0) return { ok: false, reason: 'no-lit-lines', warnings };
+    if (thinClusters.length === 0) return { ok: false, reason: 'no-lit-lines', warnings, consistency };
 
     const cal = calibrateLattice(thinClusters, w, h);
     const marginPrior = cal ? cal.a : MARGIN_RATIO * w;
@@ -683,8 +777,10 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     }
     const idxUnique = new Set(assigned.map((a) => a.i)).size === assigned.length;
     if (assigned.length === 0 || !idxUnique) {
-      return { ok: false, reason: 'layout-mismatch', warnings };
+      return { ok: false, reason: 'layout-mismatch', warnings, consistency };
     }
+    consistency.calibrated = Boolean(cal);
+    consistency.latticeAssigned = assigned.length;
     const clusters = assigned.map((a) => a.c);
 
     if (assigned.length >= 2) {
@@ -715,6 +811,8 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       const dym = (botExt - topExt - 2 * rho) / 6;
       if (dym >= 0.4 * dx && dym <= 1.9 * dx) dyPrior = dym;
     }
+    consistency.dx = dx;
+    consistency.dyPrior = dyPrior;
     let y0 = TOP_Y_RATIO * h;
     let dy = dyPrior;
     let haveExt = false;
@@ -730,13 +828,37 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     }
 
     // 3) 以橫線所在列微調 y0 / dy
-    const rowCenters = horizontalRungRows(mask, w, h, xs, dx);
+    const brightRows = horizontalRungRows(mask, w, h, xs, dx);
+    const nodeRows = gridNodeRows(img, xs, dx);
+    // 節點列至少有三列時，完全以節點列擬合；背景中的水平亮點
+    // 只在節點不足時才加入，避免把 dy 拉向錯誤的倍數。
+    // IMG-0147 是高窄的手機直式畫面；平板圖的節點光暈較寬，仍沿用
+    // 原本的亮線列與節點列合併策略，避免影響既有平板回歸結果。
+    const mobilePortrait = h / w > 1.8;
+    const mobileNodeRows = mobilePortrait
+      ? nodeRows.filter((y) => Math.abs(y - TOP_Y_RATIO * h) > 0.28 * dx)
+      : nodeRows;
+    const rowSource = mobilePortrait && mobileNodeRows.length >= 3
+      ? mobileNodeRows
+      : brightRows.concat(nodeRows);
+    const rowCenters = Array.from(new Set(rowSource.map((v) => Math.round(v * 10) / 10)))
+      .sort((a, b) => a - b);
+    consistency.rowCenters = rowCenters.length;
+    const rowFitPrior = mobilePortrait ? DY_OVER_DX * dx : dyPrior;
+    const rowFit = fitRowsFromCenters(rowCenters, y0, rowFitPrior);
+    if (rowFit && rowFit.hit >= 2) {
+      y0 = rowFit.y0;
+      dy = rowFit.dy;
+      haveExt = false;
+      consistency.rowHits = rowFit.hit;
+      consistency.rowResidual = rowFit.residual / rowFit.hit;
+    }
     const pts = [];
     for (const yc of rowCenters) {
       const k = Math.round((yc - y0) / dy);
       if (k >= 1 && k <= ROWS && Math.abs(yc - (y0 + k * dy)) < 0.3 * dy) pts.push([k, yc]);
     }
-    if (haveExt) {
+    if (haveExt && !rowFit) {
       pts.push([0, y0]);
       pts.push([6, y0 + 6 * dy]);
     }
@@ -751,6 +873,8 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       warnings.push('垂直方向缺少可參考的亮線，層位置以預設比例估計，請確認預覽。');
     }
     const ys = Array.from({ length: ROWS + 2 }, (_, k) => y0 + k * dy);
+    consistency.dy = dy;
+    consistency.endpointResidual = haveExt ? Math.abs((botExt - topExt) - (6 * dy + 2 * rho)) / Math.max(1, dy) : null;
 
     // 4) 橫線：第 1–5 層、相鄰兩欄之間的線段
     const rung = Array.from({ length: ROWS }, () => Array(GAPS).fill(false));
@@ -818,6 +942,10 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     }
     const litStartCount = startLit.filter(Boolean).length;
     const litEndCount = endLit.filter(Boolean).length;
+    consistency.startLit = litStartCount;
+    consistency.endLit = litEndCount;
+    consistency.pairs = pairs.length;
+    consistency.score = pairs.length * 100 + rung.filter((row) => row.some(Boolean)).length;
     if (litStartCount !== litEndCount) {
       warnings.push('亮起的起點 ' + litStartCount + ' 個、終點 ' + litEndCount + ' 個，數量不一致，請確認預覽。');
     }
@@ -851,6 +979,7 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       endLit,
       pairs,
       warnings,
+      consistency,
     };
   }
 
