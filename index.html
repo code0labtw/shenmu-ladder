@@ -2608,13 +2608,16 @@ function showScanPreview(r, source) {
   const pairText = r.pairs.length
     ? r.pairs.map((p) => START_LABELS[p.start] + '→' + END_LABELS[p.end]).join('、')
     : '（無）';
-  // 數字膠囊在遊戲背景上常被壓縮；若讀到的上限剛好等於實際偵測橫線數，
-  // 這是比模板的 confident 分數更可靠的交叉驗證，不應退回舊的 5 條。
-  const mr = r.maxRead && r.maxRead.value >= MIN_RUNGS && r.maxRead.value <= MAX_RUNGS &&
-    (r.maxRead.confident || r.maxRead.value === r.rungCount) ? r.maxRead.value : null;
+  // 數字膠囊在遊戲背景上常被壓縮，模板的 confident 只作提示，不能用來
+  // 否決一個落在合法範圍內的辨識結果；否則會錯誤沿用上一張圖片的目標值。
+  const mr = r.maxRead && r.maxRead.value >= MIN_RUNGS && r.maxRead.value <= MAX_RUNGS
+    ? r.maxRead.value : null;
+  // 圖片匯入不能使用上一輪 state.targetRungs 作為 fallback，避免上一張圖的
+  // 6 條殘留到本張「橫線 x 5」圖片；辨識失敗時先以實際亮線數或最低值起算，
+  // 使用者仍可在預覽視窗手動修正。
   const defaultTotal = mr !== null
     ? mr
-    : Math.max(MIN_RUNGS, Math.min(MAX_RUNGS, Math.max(r.rungCount, state.targetRungs)));
+    : Math.max(MIN_RUNGS, Math.min(MAX_RUNGS, r.rungCount));
   if (mr !== null && r.rungCount > mr) {
     r.warnings.push('偵測到的橫線 ' + r.rungCount + ' 條超過面板上限 ' + mr + '，可能有誤偵測，請確認預覽。');
   }
