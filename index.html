@@ -286,6 +286,13 @@ td.col-focus { background: rgba(245, 158, 11, 0.06); }
 .btn-scan { border-color: rgba(34, 211, 238, 0.45); color: var(--cyan300); }
 .btn-scan:hover, .btn-scan:active, .btn-scan:focus, .btn-scan:focus-visible { border-color: var(--cyan400); }
 .modal-box.scan { max-width: 30rem; }
+.modal-box.scan .modal-head { align-items: flex-start; gap: 0.75rem; }
+.modal-box.scan .modal-head .info {
+  min-width: 0; flex: 1 1 auto; flex-wrap: wrap; gap: 0.2rem 0.625rem; line-height: 1.35;
+}
+.modal-box.scan .modal-head .info b { flex: 1 1 100%; min-width: 0; }
+.modal-box.scan .modal-head .info span { font-size: 0.75rem; white-space: normal; }
+.modal-box.scan .modal-close { flex: 0 0 auto; width: 2.5rem; height: 2.5rem; touch-action: manipulation; }
 .scan-body { display: flex; flex-direction: column; gap: 0.75rem; }
 .scan-body canvas { display: block; width: 100%; max-height: 52vh; object-fit: contain; border-radius: 0.375rem; background: #05080d; }
 .scan-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 0.875rem; font-size: 0.6875rem; color: var(--s400); }
@@ -294,12 +301,12 @@ td.col-focus { background: rgba(245, 158, 11, 0.06); }
 .scan-sum b { color: var(--amber300); font-weight: 600; }
 .scan-warn { margin: 0; padding: 0.5rem 0.75rem 0.5rem 1.5rem; border: 1px solid rgba(251, 191, 36, 0.35); background: rgba(245, 158, 11, 0.08); border-radius: 0.5rem; font-size: 0.75rem; color: var(--amber200); line-height: 1.5; }
 .scan-err { border: 1px solid rgba(244, 63, 94, 0.3); background: rgba(244, 63, 94, 0.1); border-radius: 0.5rem; padding: 1rem; font-size: 0.875rem; color: var(--rose200); line-height: 1.55; }
-.scan-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.625rem; border-top: 1px solid var(--s800); padding: 0.75rem 1rem; }
+.scan-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.625rem; border-top: 1px solid var(--s800); padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px)); }
 .scan-total { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--s400); }
 .scan-total label { color: var(--s300); }
 .scan-total input { width: 4.5rem; height: 2.125rem; border: 1px solid var(--s700); background: var(--bg); border-radius: 0.5rem; text-align: center; font-family: "JetBrains Mono", "Outfit", monospace; font-size: 0.9375rem; font-weight: 600; color: var(--cyan300); }
 .scan-btns { display: flex; gap: 0.5rem; margin-left: auto; }
-.btn-ghost, .btn-primary { height: 2.25rem; padding: 0 1rem; border-radius: 0.5rem; font-size: 0.8125rem; font-weight: 600; border: 1px solid var(--s700); color: var(--s200); background: var(--card); }
+.btn-ghost, .btn-primary { min-height: 2.75rem; height: 2.75rem; padding: 0 1rem; border-radius: 0.5rem; font-size: 0.8125rem; font-weight: 600; border: 1px solid var(--s700); color: var(--s200); background: var(--card); touch-action: manipulation; -webkit-tap-highlight-color: rgba(34, 211, 238, 0.2); }
 .btn-primary { border-color: rgba(251, 191, 36, 0.6); background: rgba(245, 158, 11, 0.2); color: var(--amber200); }
 .btn-primary:hover { background: rgba(245, 158, 11, 0.3); }
 .btn-ghost:hover { background: var(--s800); }
@@ -2506,9 +2513,22 @@ function applyScan() {
   update();
 }
 
-els.modal.addEventListener('click', (e) => {
-  if (e.target.closest('[data-scan-apply]')) applyScan();
-});
+function handleScanApplyEvent(e) {
+  const button = e.target && e.target.closest ? e.target.closest('[data-scan-apply]') : null;
+  if (!button || button.dataset.busy === '1') return false;
+  e.preventDefault();
+  button.dataset.busy = '1';
+  applyScan();
+  return true;
+}
+
+// click 是一般瀏覽器路徑；iOS 部分 WebView 會只送出 touchend，補上觸控備援。
+els.modal.addEventListener('click', handleScanApplyEvent);
+els.modal.addEventListener('touchend', (e) => {
+  if (e.target && e.target.closest && e.target.closest('[data-scan-apply]')) {
+    handleScanApplyEvent(e);
+  }
+}, { passive: false });
 
 scanEls.btn.addEventListener('click', () => scanEls.file.click());
 scanEls.file.addEventListener('change', () => {
