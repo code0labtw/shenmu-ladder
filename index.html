@@ -739,6 +739,177 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     return null;
   }
 
+
+  /* ---------- 以未亮起的藍色節點圓點定位 6 欄 × 5 列（不受哪幾條線亮起影響） ---------- */
+
+  /** 找出藍色圓點（未點亮的節點）的中心：藍色遮罩 → 連通元件 → 形狀過濾 */
+  function findNodeDots(img) {
+    const { data, width: w, height: h } = img;
+    const yFrom = Math.floor(0.1 * h);
+    const yTo = Math.floor(0.92 * h);
+    const mask = new Uint8Array(w * h);
+    for (let y = yFrom; y < yTo; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = (y * w + x) * 4;
+        const r = data[p];
+        const g = data[p + 1];
+        const b = data[p + 2];
+        if (b >= 105 && b >= g + 26 && b >= r + 60 && g >= 55 && r < 130) mask[y * w + x] = 1;
+      }
+    }
+    const seen = new Uint8Array(w * h);
+    const dots = [];
+    const minD = Math.max(4, 0.008 * w);
+    const maxD = 0.045 * w;
+    const stack = [];
+    for (let i = yFrom * w; i < yTo * w; i++) {
+      if (!mask[i] || seen[i]) continue;
+      let minX = w, maxX = 0, minY = h, maxY = 0, count = 0, sx = 0, sy = 0;
+      stack.push(i);
+      seen[i] = 1;
+      while (stack.length) {
+        const j = stack.pop();
+        const x = j % w;
+        const y = (j / w) | 0;
+        count++;
+        sx += x;
+        sy += y;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (x > 0 && mask[j - 1] && !seen[j - 1]) { seen[j - 1] = 1; stack.push(j - 1); }
+        if (x < w - 1 && mask[j + 1] && !seen[j + 1]) { seen[j + 1] = 1; stack.push(j + 1); }
+        if (y > 0 && mask[j - w] && !seen[j - w]) { seen[j - w] = 1; stack.push(j - w); }
+        if (y < h - 1 && mask[j + w] && !seen[j + w]) { seen[j + w] = 1; stack.push(j + w); }
+      }
+      const bw = maxX - minX + 1;
+      const bh = maxY - minY + 1;
+      if (bw < minD || bh < minD || bw > maxD || bh > maxD) continue;
+      const aspect = bw / bh;
+      const fill = count / (bw * bh);
+      if (aspect < 0.65 || aspect > 1.55 || fill < 0.55) continue;
+      dots.push({ x: sx / count, y: sy / count, d: (bw + bh) / 2 });
+    }
+    return dots;
+  }
+
+  /** 一維座標聚類（排序後以容差合併），回傳 [{ v, n }] */
+  function clusterValues(values, tol) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const out = [];
+    for (const v of sorted) {
+      const last = out[out.length - 1];
+      if (last && v - last.v <= tol) {
+        last.v = (last.v * last.n + v) / (last.n + 1);
+        last.n++;
+      } else out.push({ v, n: 1 });
+    }
+    return out;
+  }
+
+  /**
+   * 在座標集合中找出等距格點（允許少數雜訊離群值）。
+   * 候選間距由任兩點的差除以 1..6 得到；以「落在格點上的點數」為主要分數，
+   * 同分時選最接近先驗間距者，以消除倍數歧義。
+   * 回傳 { step, origin, points: [{ v, k }] }，k 為相對最左內點的整數索引（0..maxSpan）。
+   */
+  function fitSpacing(values, lo, hi, prior, tolRatio, maxSpan) {
+    if (values.length < 2) return null;
+    const sorted = values.slice().sort((a, b) => a - b);
+    let best = null;
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const d = sorted[j] - sorted[i];
+        for (let n = 1; n <= 6; n++) {
+          const step = d / n;
+          if (step < lo || step > hi) continue;
+          for (let o = 0; o < sorted.length; o++) {
+            const origin = sorted[o];
+            const pts = [];
+            for (const v of sorted) {
+              const k = Math.round((v - origin) / step);
+              if (k < 0 || k > maxSpan) continue;
+              if (Math.abs(v - origin - k * step) <= tolRatio * step) pts.push({ v, k });
+            }
+            const distinct = new Set(pts.map((p) => p.k)).size;
+            if (distinct < 2) continue;
+            const score = distinct * 1000 - (1000 * Math.abs(step - prior)) / prior;
+            if (!best || score > best.score) best = { step, origin, points: pts, score };
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  function fitLatticeFromDots(img, litClusters, litTop, litBot) {
+    const { width: w, height: h } = img;
+    const dots = findNodeDots(img);
+    if (dots.length < 4) return null;
+
+    // ---- X：欄位。證據 = 藍點的 x 聚類（≥2 點）＋ 亮線的 x；允許少數離群值 ----
+    const tolX = Math.max(2, 0.007 * w);
+    const evidence = clusterValues(dots.map((d) => d.x), tolX).filter((c) => c.n >= 2).map((c) => c.v);
+    const dotEvidence = evidence.length;
+    for (const c of litClusters || []) {
+      if (!evidence.some((v) => Math.abs(v - c.x) <= 1.5 * tolX)) evidence.push(c.x);
+    }
+    const dxPriorW = Math.min(DX_RATIO * w, 0.0673 * h); // 手機：依寬度；寬螢幕：遊戲畫面以高度為準
+    const xf = fitSpacing(evidence, 0.55 * dxPriorW, 1.4 * dxPriorW, dxPriorW, 0.08, COLS - 1);
+    if (!xf) return null;
+    const dx0 = xf.step;
+    const span = Math.max(...xf.points.map((p) => p.k));
+    let bestI0 = 0;
+    let bestOff = Infinity;
+    for (let i0 = 0; i0 + span <= COLS - 1; i0++) {
+      const a0 = xf.origin - i0 * dx0;
+      const off = Math.abs(a0 + 2.5 * dx0 - w / 2); // 版面大致左右置中
+      if (off < bestOff) { bestOff = off; bestI0 = i0; }
+    }
+    const xfit = linearFit(xf.points.map((p) => [bestI0 + p.k, p.v]));
+    let a = xf.origin - bestI0 * dx0;
+    let dx = dx0;
+    if (xfit && Math.abs(xfit.b - dx0) < 0.05 * dx0) { a = xfit.a; dx = xfit.b; }
+    const xs = Array.from({ length: COLS }, (_, i) => a + i * dx);
+    const colCount = new Set(xf.points.map((p) => p.k)).size;
+    if (colCount < 3) return null;
+
+    // ---- Y：列。只採用落在六欄上的藍點 ----
+    const onCol = dots.filter((d) => xs.some((x) => Math.abs(d.x - x) <= 0.12 * dx));
+    if (onCol.length < 3) return null;
+    const rowsCl = clusterValues(onCol.map((d) => d.y), Math.max(2, 0.006 * w)).filter((c) => c.n >= 1);
+    const rowVals = rowsCl.map((c) => c.v);
+    const dyPriorInit = DY_OVER_DX * dx;
+    const yf = fitSpacing(rowVals, 0.6 * dx, 1.7 * dx, dyPriorInit, 0.08, ROWS - 1);
+    if (!yf) return null;
+    if (new Set(yf.points.map((p) => p.k)).size < 3) return null;
+    let dy = yf.step;
+    const rowBase = yf.points.map((p) => p.v);
+    const rowRel = yf.points.map((p) => p.k);
+    const rowSpan = Math.max(...rowRel);
+    rowBase.length = rowBase.length;
+    // 絕對列索引：用亮線的頂端（頂端圓環）／底端定位，容許 ±0.5 層
+    const rho = 0.12 * dx;
+    const org = yf.origin;
+    let bestK = -1;
+    let bestCost = Infinity;
+    for (let k0 = 1; k0 + rowSpan <= ROWS; k0++) {
+      const y0 = org - k0 * dy;
+      let cost = 0.002 * Math.abs(y0 - TOP_Y_RATIO * h); // 沒有亮線時的弱先驗
+      if (Number.isFinite(litTop)) cost += Math.abs(y0 - (litTop + rho));
+      if (Number.isFinite(litBot)) cost += 0.5 * Math.abs(y0 + 6 * dy - (litBot - rho));
+      if (cost < bestCost) { bestCost = cost; bestK = k0; }
+    }
+    if (bestK < 0) return null;
+    const yfit = linearFit(rowBase.map((v, k) => [bestK + rowRel[k], v]));
+    let y0 = org - bestK * dy;
+    if (yfit && Math.abs(yfit.b - dy) < 0.05 * dy) { y0 = yfit.a; dy = yfit.b; }
+    if (Number.isFinite(litTop) && Math.abs(y0 - (litTop + rho)) > 0.6 * dy) return null;
+    if (y0 <= 0 || y0 + 6 * dy >= h) return null;
+    return { xs, dx, y0, dy, cols: evidence.length, rows: rowBase.length };
+  }
+
   function analyse(img, level) {
     const { width: w, height: h } = img;
     const warnings = [];
@@ -757,6 +928,17 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     if (thinClusters.length === 0) return { ok: false, reason: 'no-lit-lines', warnings, consistency };
 
     const cal = calibrateLattice(thinClusters, w, h);
+    // 以藍色節點圓點為主要定位依據；亮線只用來定出頂端／底端與消除歧義
+    let litTop = NaN;
+    let litBot = NaN;
+    if (cal) { litTop = cal.top; litBot = cal.bot; }
+    else {
+      for (const c of thinClusters) {
+        if (!(c.top >= litTop)) litTop = c.top;
+        if (!(c.bottom <= litBot)) litBot = c.bottom;
+      }
+    }
+    const dotLat = fitLatticeFromDots(img, thinClusters, litTop, litBot);
     const marginPrior = cal ? cal.a : MARGIN_RATIO * w;
     const dxPrior = cal ? cal.dx : DX_RATIO * w;
     let xs = Array.from({ length: COLS }, (_, i) => marginPrior + i * dxPrior);
@@ -871,6 +1053,14 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       }
     } else if (!haveExt) {
       warnings.push('垂直方向缺少可參考的亮線，層位置以預設比例估計，請確認預覽。');
+    }
+    if (dotLat) {
+      xs = dotLat.xs;
+      dx = dotLat.dx;
+      y0 = dotLat.y0;
+      dy = dotLat.dy;
+      latticeFromImage = true;
+      consistency.dotLattice = { cols: dotLat.cols, rows: dotLat.rows };
     }
     const ys = Array.from({ length: ROWS + 2 }, (_, k) => y0 + k * dy);
     consistency.dy = dy;
@@ -1072,7 +1262,7 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
       const bh = maxY - minY + 1;
       const fill = count / (bw * bh);
       const aspect = bw / bh;
-      if (bw >= 0.09 * gameW && bw <= 0.3 * gameW && aspect >= 2.2 && aspect <= 5.5 && fill >= 0.55) {
+      if (bw >= 0.09 * gameW && bw <= 0.45 * gameW && aspect >= 2.2 && aspect <= 5.5 && fill >= 0.55) {
         if (!best || fill > best.fill) best = { minX, maxX, minY, maxY, fill };
       }
     }
@@ -1146,7 +1336,7 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
   }
 
   function readMaxRungs(img, res) {
-    const pill = findPill(img, res);
+    const pill = findPill(img, res) || findPill(img, null);
     if (!pill) return null;
     const feat = digitFeature(img, pill);
     if (!feat) return null;
@@ -1163,14 +1353,14 @@ body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset
     if (scores.length === 0) return null;
     scores.sort((a, b) => a.score - b.score);
     const second = scores[1] ? scores[1].score : Infinity;
-    return { value: scores[0].digit, score: scores[0].score, confident: scores[0].score < 0.75 * second };
+    return { value: scores[0].digit, score: scores[0].score, confident: scores[0].score < 0.88 * second };
   }
 
   function setDigitTemplates(list) {
     DIGIT_TEMPLATES = list.map(([digit, f]) => ({ digit, feat: Float32Array.from(f) }));
   }
 
-  setDigitTemplates([[5,[0.702,0.702,0.41,0.117,0.117,0.155,0.155,0.077,0,0,0.702,0.702,0.41,0.117,0.117,0.155,0.155,0.077,0,0,0.468,0.468,0.234,0,0,0,0,0,0,0,0.468,0.468,0.234,0,0,0,0,0,0,0,0.686,0.686,0.519,0.352,0.352,0.468,0.468,0.234,0,0,0.686,0.686,0.519,0.352,0.352,0.468,0.468,0.234,0,0,0,0,0,0,0,0.184,0.184,0.355,0.526,0.526,0,0,0,0,0,0.184,0.184,0.355,0.526,0.526,0,0,0,0,0,0,0,0.317,0.633,0.633,0,0,0,0,0,0,0,0.317,0.633,0.633,0,0,0,0,0,0.316,0.316,0.349,0.382,0.382,0,0,0,0,0,0.316,0.316,0.349,0.382,0.382,0.399,0.399,0.432,0.466,0.466,0.366,0.366,0.183,0,0,0.399,0.399,0.432,0.466,0.466,0.366,0.366,0.183,0,0]],[6,[0,0,0.581,0.581,0.104,0.104,0.158,0.158,0,0,0,0,0.581,0.581,0.104,0.104,0.158,0.158,0,0,0.134,0.134,0.252,0.252,0,0,0,0,0,0,0.134,0.134,0.252,0.252,0,0,0,0,0,0,0.347,0.347,0.276,0.276,0.231,0.231,0.307,0.307,0,0,0.347,0.347,0.276,0.276,0.231,0.231,0.307,0.307,0,0,0.427,0.427,0.444,0.444,0,0,0.284,0.284,0.345,0.345,0.427,0.427,0.444,0.444,0,0,0.284,0.284,0.345,0.345,0.331,0.331,0.065,0.065,0,0,0,0,0.567,0.567,0.331,0.331,0.065,0.065,0,0,0,0,0.567,0.567,0,0,0.581,0.581,0,0,0.183,0.183,0.358,0.358,0,0,0.581,0.581,0,0,0.183,0.183,0.358,0.358,0,0,0.073,0.073,0.486,0.486,0.352,0.352,0,0,0,0,0.073,0.073,0.486,0.486,0.352,0.352,0,0]],[7,[0.02,0.02,0.02,0.33,0.641,0.641,0.478,0.316,0.316,0.316,0.02,0.02,0.02,0.33,0.641,0.641,0.478,0.316,0.316,0.316,0.01,0.01,0.01,0.272,0.534,0.534,0.346,0.158,0.158,0.158,0,0,0,0.213,0.427,0.427,0.213,0,0,0,0.1,0.1,0.1,0.195,0.291,0.291,0.145,0,0,0,0.2,0.2,0.2,0.177,0.155,0.155,0.077,0,0,0,0.2,0.2,0.2,0.177,0.155,0.155,0.077,0,0,0,0.543,0.543,0.543,0.272,0,0,0,0,0,0,0.543,0.543,0.543,0.272,0,0,0,0,0,0,0.562,0.562,0.562,0.281,0,0,0,0,0,0,0.581,0.581,0.581,0.291,0,0,0,0,0,0,0.602,0.602,0.602,0.301,0,0,0,0,0,0,0.623,0.623,0.623,0.312,0,0,0,0,0,0,0.623,0.623,0.623,0.312,0,0,0,0,0,0]],[8,[0,0,0,0,0.217,0.217,0,0,0,0,0,0,0.27,0.27,0.109,0.109,0.25,0.25,0,0,0,0,0.541,0.541,0,0,0.499,0.499,0,0,0.058,0.058,0.438,0.438,0,0,0.292,0.292,0.133,0.133,0.116,0.116,0.335,0.335,0,0,0.084,0.084,0.266,0.266,0.058,0.058,0.458,0.458,0.087,0.087,0.199,0.199,0.133,0.133,0,0,0.581,0.581,0.174,0.174,0.313,0.313,0,0,0,0,0.33,0.33,0.262,0.262,0.716,0.716,0,0,0.211,0.211,0.165,0.165,0.131,0.131,0.358,0.358,0.248,0.248,0.423,0.423,0,0,0,0,0,0,0.496,0.496,0.399,0.399,0.078,0.078,0,0,0.04,0.04,0.473,0.473,0.376,0.376,0.156,0.156,0,0,0.08,0.08,0.451,0.451,0.188,0.188,0.242,0.242,0.186,0.186,0.216,0.216,0.226,0.226,0,0,0.328,0.328,0.373,0.373,0.351,0.351,0,0]],[9,[0,0,0,0,0.268,0.268,0,0,0,0,0.029,0.029,0.236,0.236,0.134,0.134,0.306,0.306,0,0,0.059,0.059,0.472,0.472,0,0,0.612,0.612,0,0,0.288,0.288,0.236,0.236,0,0,0.351,0.351,0.151,0.151,0.518,0.518,0,0,0,0,0.089,0.089,0.302,0.302,0.482,0.482,0.009,0.009,0,0,0.121,0.121,0.396,0.396,0.446,0.446,0.018,0.018,0,0,0.153,0.153,0.489,0.489,0,0,0.543,0.543,0.266,0.266,0.465,0.465,0.406,0.406,0,0,0.272,0.272,0.133,0.133,0.253,0.253,0.346,0.346,0,0,0,0,0,0,0.042,0.042,0.286,0.286,0,0,0,0,0,0,0.327,0.327,0.143,0.143,0,0,0,0,0,0,0.611,0.611,0,0,0,0,0.234,0.234,0.248,0.248,0.306,0.306,0,0,0,0,0.468,0.468,0.496,0.496,0,0,0,0]],[9,[0,0.069,0.39,0.539,0.497,0.517,0.529,0.329,0,0,0,0.431,0.717,0.343,0.222,0.262,0.422,0.712,0.3,0,0.149,0.803,0.384,0,0,0,0.034,0.521,0.756,0.07,0.412,0.846,0.056,0,0,0,0,0.138,0.891,0.329,0.502,0.81,0,0,0,0,0,0,0.752,0.663,0.285,0.863,0.179,0,0,0,0,0.108,0.779,0.78,0.073,0.746,0.586,0.162,0.004,0.017,0.183,0.415,0.838,0.787,0,0.303,0.641,0.504,0.339,0.324,0.393,0.318,0.708,0.763,0,0,0.233,0.341,0.337,0.307,0.211,0.011,0.667,0.71,0,0,0,0,0.001,0,0,0.071,0.835,0.429,0,0,0,0,0,0,0,0.46,0.801,0.065,0,0.242,0.122,0,0,0.004,0.29,0.756,0.397,0,0,0.46,0.516,0.366,0.345,0.384,0.645,0.497,0.055,0,0,0.218,0.435,0.516,0.522,0.489,0.355,0.094,0,0]]]);
+  setDigitTemplates([[5,[0.033,0.263,0.287,0.192,0.19,0.23,0.169,0.005,0,0,0.16,0.575,0.486,0.204,0.139,0.196,0.151,0.005,0,0,0.255,0.663,0.456,0.089,0.042,0.073,0.055,0,0,0,0.231,0.551,0.25,0,0,0,0,0,0,0,0.255,0.574,0.345,0.105,0.092,0.116,0.077,0,0,0,0.235,0.602,0.53,0.292,0.292,0.411,0.331,0.064,0,0,0.081,0.26,0.229,0.135,0.154,0.339,0.402,0.262,0.131,0,0,0.005,0,0,0,0.101,0.306,0.464,0.404,0.02,0,0,0,0,0,0,0.119,0.499,0.589,0.073,0,0,0,0,0,0,0.017,0.437,0.601,0.095,0,0,0,0,0,0.033,0.199,0.468,0.48,0.031,0.053,0.066,0,0,0,0.179,0.381,0.395,0.252,0,0.136,0.254,0.206,0.183,0.2,0.377,0.38,0.152,0.049,0,0.096,0.316,0.382,0.37,0.379,0.381,0.229,0,0,0]],[6,[0,0,0,0,0.054,0.143,0.165,0.106,0.029,0,0,0,0.062,0.131,0.178,0.245,0.27,0.21,0.075,0,0,0.062,0.273,0.383,0.258,0.169,0.189,0.181,0.08,0.005,0.026,0.169,0.367,0.322,0.118,0.034,0.039,0.045,0.023,0.003,0.127,0.264,0.269,0.118,0,0,0,0,0,0,0.208,0.322,0.275,0.165,0.085,0.082,0.095,0.058,0.008,0,0.269,0.378,0.321,0.246,0.182,0.184,0.251,0.216,0.072,0,0.34,0.505,0.463,0.222,0.022,0,0.101,0.277,0.349,0.262,0.333,0.46,0.368,0.141,0,0,0.029,0.142,0.34,0.419,0.285,0.355,0.21,0.054,0,0,0,0.028,0.253,0.464,0.12,0.264,0.312,0.146,0.002,0,0.002,0.06,0.28,0.436,0.005,0.177,0.432,0.31,0.05,0,0.063,0.208,0.311,0.257,0,0.065,0.247,0.312,0.223,0.197,0.272,0.309,0.2,0.067,0,0,0.058,0.192,0.319,0.388,0.38,0.257,0.079,0]],[7,[0.148,0.186,0.2,0.148,0.158,0.252,0.312,0.267,0.148,0.074,0.138,0.171,0.163,0.088,0.146,0.371,0.528,0.487,0.301,0.178,0.05,0.065,0.056,0.016,0.081,0.354,0.566,0.466,0.225,0.105,0,0,0,0,0.022,0.248,0.443,0.269,0.052,0,0,0,0,0.007,0.043,0.196,0.259,0.099,0,0,0,0,0,0.079,0.208,0.228,0.118,0.018,0,0,0,0,0,0.179,0.342,0.198,0.035,0,0,0,0,0,0.016,0.261,0.42,0.174,0,0,0,0,0,0,0.045,0.323,0.444,0.167,0,0,0,0,0,0,0.092,0.386,0.444,0.149,0,0,0,0,0,0,0.145,0.462,0.465,0.148,0,0,0,0,0,0,0.149,0.442,0.421,0.128,0,0,0,0,0,0,0.106,0.324,0.289,0.071,0,0,0,0,0,0,0.037,0.136,0.116,0.017,0,0,0,0]],[8,[0,0,0,0.026,0.091,0.112,0.058,0.012,0,0,0,0.018,0.091,0.151,0.151,0.161,0.177,0.142,0.052,0,0,0.104,0.314,0.317,0.126,0.073,0.241,0.349,0.196,0.034,0.048,0.23,0.406,0.268,0.045,0.009,0.121,0.28,0.286,0.162,0.056,0.223,0.348,0.192,0.012,0,0.01,0.102,0.213,0.184,0.008,0.15,0.381,0.34,0.118,0.042,0.094,0.154,0.13,0.059,0,0.112,0.395,0.491,0.291,0.19,0.276,0.283,0.113,0,0,0.067,0.252,0.349,0.293,0.348,0.556,0.585,0.255,0.008,0.044,0.103,0.133,0.134,0.108,0.148,0.323,0.432,0.282,0.094,0.206,0.212,0.067,0.003,0,0,0.058,0.172,0.292,0.304,0.348,0.344,0.136,0.017,0,0,0,0.085,0.326,0.463,0.215,0.316,0.242,0.089,0,0,0.034,0.151,0.308,0.328,0.05,0.16,0.266,0.244,0.157,0.15,0.211,0.256,0.197,0.105,0,0.038,0.183,0.303,0.299,0.297,0.32,0.244,0.082,0]],[9,[0,0,0.016,0.072,0.15,0.136,0.041,0,0,0,0,0.042,0.147,0.224,0.223,0.196,0.178,0.132,0.047,0,0.041,0.182,0.345,0.311,0.139,0.118,0.312,0.394,0.17,0.002,0.236,0.314,0.254,0.136,0.029,0.023,0.176,0.337,0.265,0.112,0.418,0.341,0.085,0,0,0,0.004,0.109,0.283,0.308,0.427,0.365,0.102,0,0,0,0,0.117,0.339,0.402,0.326,0.351,0.166,0.033,0,0,0.031,0.184,0.401,0.445,0.02,0.165,0.388,0.418,0.262,0.205,0.311,0.426,0.483,0.413,0,0.058,0.182,0.224,0.161,0.135,0.211,0.324,0.407,0.367,0,0,0,0,0,0,0.034,0.143,0.283,0.3,0,0,0,0,0,0,0.115,0.282,0.266,0.135,0,0,0.004,0.004,0,0.032,0.27,0.458,0.241,0.022,0,0.052,0.162,0.227,0.219,0.219,0.284,0.258,0.09,0,0,0.085,0.281,0.422,0.429,0.344,0.194,0.054,0,0]]]);
 
   const api = { detectLadder, readMaxRungs, digitFeature, findPill, setDigitTemplates, COLS, GAPS, ROWS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -2533,7 +2723,7 @@ async function scanFile(file) {
   }
   const { img, url } = loaded;
   try {
-    const scale = Math.min(1, 800 / img.naturalWidth);
+    const scale = 800 / img.naturalWidth;
     const w = Math.max(1, Math.round(img.naturalWidth * scale));
     const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const work = document.createElement('canvas');
